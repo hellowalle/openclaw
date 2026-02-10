@@ -64,6 +64,7 @@
     "lint:swift": "swiftlint lint --config .swiftlint.yml && (cd apps/ios && swiftlint lint --config .swiftlint.yml)",
     "local:rebuild-install": "bash scripts/rebuild-local-install.sh",
     "local:sync-upstream": "bash scripts/sync-upstream-keep-custom.sh",
+    "local:update-all": "bash scripts/update-and-rebuild-local.sh",
     "mac:open": "open dist/OpenClaw.app",
     "mac:package": "bash scripts/package-mac-app.sh",
     "mac:restart": "bash scripts/restart-mac.sh",
