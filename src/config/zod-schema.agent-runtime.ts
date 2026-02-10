@@ -284,6 +284,7 @@ export const AgentToolsSchema = z
         backgroundMs: z.number().int().positive().optional(),
         timeoutSec: z.number().int().positive().optional(),
         approvalRunningNoticeMs: z.number().int().nonnegative().optional(),
+        backgroundRunningNoticeMs: z.number().int().nonnegative().optional(),
         cleanupMs: z.number().int().positive().optional(),
         notifyOnExit: z.boolean().optional(),
         applyPatch: z

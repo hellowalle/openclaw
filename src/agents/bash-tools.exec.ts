@@ -123,6 +123,7 @@ const DEFAULT_NOTIFY_TAIL_CHARS = 400;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000;
 const DEFAULT_APPROVAL_REQUEST_TIMEOUT_MS = 130_000;
 const DEFAULT_APPROVAL_RUNNING_NOTICE_MS = 10_000;
+const DEFAULT_BACKGROUND_RUNNING_NOTICE_MS = 0;
 const APPROVAL_SLUG_LENGTH = 8;
 
 type PtyExitEvent = { exitCode: number; signal?: number };
@@ -174,6 +175,7 @@ export type ExecToolDefaults = {
   backgroundMs?: number;
   timeoutSec?: number;
   approvalRunningNoticeMs?: number;
+  backgroundRunningNoticeMs?: number;
   sandbox?: BashSandboxConfig;
   elevated?: ExecElevatedDefaults;
   allowBackground?: boolean;
@@ -409,6 +411,16 @@ function resolveApprovalRunningNoticeMs(value?: number) {
   return Math.floor(value);
 }
 
+function resolveBackgroundRunningNoticeMs(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_BACKGROUND_RUNNING_NOTICE_MS;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
 function emitExecSystemEvent(text: string, opts: { sessionKey?: string; contextKey?: string }) {
   const sessionKey = opts.sessionKey?.trim();
   if (!sessionKey) {
@@ -416,6 +428,32 @@ function emitExecSystemEvent(text: string, opts: { sessionKey?: string; contextK
   }
   enqueueSystemEvent(text, { sessionKey, contextKey: opts.contextKey });
   requestHeartbeatNow({ reason: "exec-event" });
+}
+
+function startBackgroundExecRunningNotices(opts: {
+  session: ProcessSession;
+  command: string;
+  noticeMs: number;
+  sessionKey?: string;
+  contextKey?: string;
+}) {
+  if (opts.noticeMs <= 0) {
+    return () => {};
+  }
+  const timer = setInterval(() => {
+    const elapsedMs = Math.max(0, Date.now() - opts.session.startedAt);
+    const elapsedMin = Math.max(1, Math.floor(elapsedMs / 60_000));
+    const commandPreview = truncateMiddle(opts.command, 120);
+    emitExecSystemEvent(
+      `Exec still running (session=${opts.session.id}, elapsed≈${elapsedMin}m): ${commandPreview}`,
+      {
+        sessionKey: opts.sessionKey,
+        contextKey: opts.contextKey,
+      },
+    );
+  }, opts.noticeMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 async function runExecProcess(opts: {
@@ -817,6 +855,9 @@ export function createExecTool(
   const notifyOnExit = defaults?.notifyOnExit !== false;
   const notifySessionKey = defaults?.sessionKey?.trim() || undefined;
   const approvalRunningNoticeMs = resolveApprovalRunningNoticeMs(defaults?.approvalRunningNoticeMs);
+  const backgroundRunningNoticeMs = resolveBackgroundRunningNoticeMs(
+    defaults?.backgroundRunningNoticeMs,
+  );
   // Derive agentId only when sessionKey is an agent session key.
   const parsedAgentSession = parseAgentSessionKey(defaults?.sessionKey);
   const agentId =
@@ -1436,6 +1477,13 @@ export function createExecTool(
             }
 
             markBackgrounded(run.session);
+            const stopBackgroundRunningNotices = startBackgroundExecRunningNotices({
+              session: run.session,
+              command: commandText,
+              noticeMs: backgroundRunningNoticeMs,
+              sessionKey: notifySessionKey,
+              contextKey,
+            });
 
             let runningTimer: NodeJS.Timeout | null = null;
             if (approvalRunningNoticeMs > 0) {
@@ -1448,6 +1496,7 @@ export function createExecTool(
             }
 
             const outcome = await run.promise;
+            stopBackgroundRunningNotices();
             if (runningTimer) {
               clearTimeout(runningTimer);
             }
@@ -1527,6 +1576,7 @@ export function createExecTool(
 
       let yielded = false;
       let yieldTimer: NodeJS.Timeout | null = null;
+      let stopBackgroundRunningNotices: (() => void) | null = null;
 
       // Tool-call abort should not kill backgrounded sessions; timeouts still must.
       const onAbortSignal = () => {
@@ -1543,6 +1593,18 @@ export function createExecTool(
       }
 
       return new Promise<AgentToolResult<ExecToolDetails>>((resolve, reject) => {
+        const ensureBackgroundRunningNotices = () => {
+          if (stopBackgroundRunningNotices || backgroundRunningNoticeMs <= 0) {
+            return;
+          }
+          stopBackgroundRunningNotices = startBackgroundExecRunningNotices({
+            session: run.session,
+            command: params.command,
+            noticeMs: backgroundRunningNoticeMs,
+            sessionKey: notifySessionKey,
+          });
+        };
+
         const resolveRunning = () =>
           resolve({
             content: [
@@ -1572,6 +1634,7 @@ export function createExecTool(
           }
           yielded = true;
           markBackgrounded(run.session);
+          ensureBackgroundRunningNotices();
           resolveRunning();
         };
 
@@ -1585,6 +1648,7 @@ export function createExecTool(
               }
               yielded = true;
               markBackgrounded(run.session);
+              ensureBackgroundRunningNotices();
               resolveRunning();
             }, yieldWindow);
           }
@@ -1594,6 +1658,10 @@ export function createExecTool(
           .then((outcome) => {
             if (yieldTimer) {
               clearTimeout(yieldTimer);
+            }
+            if (stopBackgroundRunningNotices) {
+              stopBackgroundRunningNotices();
+              stopBackgroundRunningNotices = null;
             }
             if (yielded || run.session.backgrounded) {
               return;
@@ -1621,6 +1689,10 @@ export function createExecTool(
           .catch((err) => {
             if (yieldTimer) {
               clearTimeout(yieldTimer);
+            }
+            if (stopBackgroundRunningNotices) {
+              stopBackgroundRunningNotices();
+              stopBackgroundRunningNotices = null;
             }
             if (yielded || run.session.backgrounded) {
               return;

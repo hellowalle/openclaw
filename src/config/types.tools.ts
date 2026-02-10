@@ -179,6 +179,8 @@ export type ExecToolConfig = {
   timeoutSec?: number;
   /** Emit a running notice (ms) when approval-backed exec runs long (default: 10000, 0 = off). */
   approvalRunningNoticeMs?: number;
+  /** Emit periodic "still running" system events for backgrounded exec sessions (0 = off). */
+  backgroundRunningNoticeMs?: number;
   /** How long to keep finished sessions in memory (ms). */
   cleanupMs?: number;
   /** Emit a system event and heartbeat when a backgrounded exec exits. */
